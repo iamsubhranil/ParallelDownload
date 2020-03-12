@@ -4,11 +4,11 @@ import threading
 from requests import Response
 from argparse import ArgumentParser
 from multiprocessing.dummy import Pool
+from sys import exit
 import re
 
 total=0 # to be updated by size
 current=0   # to be updated by update_bar
-printerPool = Pool(1)
 lastprint = time.perf_counter_ns()
 blanklist = []
 chunk_size = 1024 * 10
@@ -73,28 +73,30 @@ def convert_bytes(byte):
     return "%.1f %s" % (byte, unit)
 
 
-def update_bar():
+def update_bar(interval):
     global current, total
     #print(time.perf_counter_ns(), lastprint)
     while not stopall:
         print_parts_progressbar(suffix="(%10s/%10s)\t" % (convert_bytes(current), convert_bytes(total)))
         #printProgressBar(current, total, \
         #                suffix="(%10s/%10s)\t" % (convert_bytes(current), convert_bytes(total)))
-        time.sleep(1)
+        time.sleep(interval)
 
 def update_value():
     global current, chunk_size
     current = current + chunk_size
 
 def resume_download(resume_header):
-    global chunk_size, current, completed_chunks_count
+    global current, completed_chunks_count
+    chunk_size = resume_header[3]
     #print("[Get] Getting ", resume_header[0]['Range'])
     f = requests.get(link, headers=resume_header[0], stream=True,  verify=True, allow_redirects=True)
+    numpart = resume_header[2]
     with open("temp_%s.part%d" % (resume_header[1], resume_header[2]), "wb") as fd:
         for chunk in f.iter_content(chunk_size):
             fd.write(chunk)
             current += chunk_size
-            completed_chunks_count[resume_header[2]] += 1
+            completed_chunks_count[numpart] += 1
             if stopall:
                 break
             #printerPool.apply_async(update_value)
@@ -102,6 +104,18 @@ def resume_download(resume_header):
         fd.close()
     #print("[Info] Getting ", resume_header[0]['Range'], " done!")
     f.close()
+
+def check_positive(value):
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError("%s is an invalid positive int value" % value)
+    return ivalue
+
+def check_positive_float(value):
+    ivalue = float(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError("%s is an invalid positive float value" % value)
+    return ivalue
 
 regex = re.compile(
         r'^(?:http|ftp)s?://' # http:// or https://
@@ -117,23 +131,32 @@ if __name__=="__main__":
     argparser.add_argument("-l", "--link", metavar="<link_to_the_file>", \
                            help="Link of the file to download", required=True)
     argparser.add_argument("-p", "--parallel", metavar="<no_of_parallel_downloads>", \
-                           type=int, help="No of simultaneous downlads", required=True)
-
+                           type=check_positive, help="No of simultaneous downlads", required=True)
+    argparser.add_argument("-c", "--chunk", metavar="<size_of_each_chunk_in_bytes>", \
+                           type=check_positive, \
+                           help="Size of each chunk to be downloaded (in bytes)", \
+                           required=False, default=1024*10)
+    argparser.add_argument("-u", "--update", metavar="<update_interval_in_seconds>", \
+                           type=check_positive_float, \
+                           help="Time interval to update progress (in seconds)", \
+                           required=False, default=1)
     args = argparser.parse_args()
 
     if re.match(regex, args.link) is None:
         print("[Error] Bad url '%s'!" % args.link)
-        exit()
+        exit(1)
 
     link=args.link
     parallel_download=args.parallel
+    chunk_size=args.chunk
+    update_interval=args.update
 
     print("[Get] Getting content length")
     try:
         resp = requests.get(link, stream=True)
     except:
         print("[Error] Given url does not exist or is not available at the moment!")
-        exit()
+        exit(1)
 
     details = resp.headers
     print(details)
@@ -152,47 +175,53 @@ if __name__=="__main__":
     partscount = total // partsize
     parts = 0
     number_of_chunks = total // chunk_size
+    if number_of_chunks == 0:
+        print("[Error] Chunk size is greater than the size of the file!")
+        exit(1)
     chunks_per_percentage = number_of_chunks // 100
     percentage_per_parts = 100 // partscount
 
     headers = []
 
     while parts < (partscount - 1): # Accomodate all extra bytes in the last part separately
-        headers.append(({'Range': 'bytes=%d-%d' % (partstart, partend)}, name, parts))
+        headers.append(({'Range': 'bytes=%d-%d' % (partstart, partend)}, name, parts, chunk_size))
         partstart = partend + 1
         partend = partstart + partsize
         parts = parts + 1
         completed_chunks_count.append(0)
 
-    headers.append(({'Range': 'bytes=%d-' % (partstart)}, name, parts))
+    headers.append(({'Range': 'bytes=%d-' % (partstart)}, name, parts, chunk_size))
     completed_chunks_count.append(0)
 
     print("[Info] Creating pool")
     pool = Pool(parallel_download)
+    printerPool = Pool(1)
 
     stopnow = threading.Event()
 
-    printerPool.apply_async(update_bar)
-
     try:
+        print("[Info] Starting download")
+        printerPool.apply_async(update_bar, args=(update_interval,))
         pool.map(resume_download, headers)
         stopall = True
         printerPool.close()
         printerPool.join()
     except (InterruptedError,KeyboardInterrupt):
-        print("[Error] Process interrupted! Deleting all downloaded parts!")
         stopall = True
         pool.close()
         pool.join()
         printerPool.close()
         printerPool.join()
+        print("\n[Error] Process interrupted! Deleting all downloaded parts!")
         parts = 0
         while parts < len(headers):
             partname = "temp_%s.part%d" % (name, parts)
+            parts = parts + 1
             try:
                 os.remove(partname)
             except:
                 pass
+        exit(1)
 
     print("\n[Info] Joining downloaded parts")
     parts = 0
