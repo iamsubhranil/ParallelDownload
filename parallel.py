@@ -18,7 +18,7 @@ percentage_per_parts = 0
 chunks_per_percentage = 0
 completed_chunks_count = [] # number of chunks completed by each part
 
-def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '█'):
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 80, fill = '█'):
     """
     Call in a loop to create terminal progress bar
     @params:
@@ -33,14 +33,17 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
     percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
     filledLength = int(length * iteration // total)
     bar = fill * filledLength + '-' * (length - filledLength)
-    print('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
+    print('\r', end='')
+    if len(prefix):
+        print("%s " % prefix, end='')
+    print('|%s| %s%% %s' % (prefix, bar, percent, suffix), end = '\r')
     # Print New Line on Complete
     if iteration == total:
         print()
 
 def print_parts_progressbar(suffix = '', fill = '█'):
     global current, total, completed_chunks_count, percentage_per_parts, chunks_per_percentage
-    print('\r   |', end = '')
+    print('\r|', end = '')
     i = 0
     for com in completed_chunks_count:
         #print(str(com.__class__))
@@ -73,11 +76,32 @@ def convert_bytes(byte):
     return "%.1f %s" % (byte, unit)
 
 
+def convert_time(t):
+    s = ""
+    if t >= 3600:
+        s = str(int(t // 3600)) + "h "
+        t = t % 3600
+    if t >= 60:
+        s += str(int(t // 60)) + "m "
+        t = t % 60
+    s += str(int(t)) + "s"
+    return s
+
 def update_bar(interval):
     global current, total
+    oldcurrent = current
     #print(time.perf_counter_ns(), lastprint)
     while not stopall:
-        print_parts_progressbar(suffix="(%10s/%10s)\t" % (convert_bytes(current), convert_bytes(total)))
+        downloaded = current - oldcurrent
+        rem = total - current
+        oldcurrent = current
+        speed = downloaded / interval
+        remtime = 0
+        if speed > 0:
+            remtime = rem / speed
+        print_parts_progressbar(suffix="(%s/%s) (%6s/s, %s)" %
+                                (convert_bytes(current), convert_bytes(total), convert_bytes(speed),
+                                 convert_time(remtime)))
         #printProgressBar(current, total, \
         #                suffix="(%10s/%10s)\t" % (convert_bytes(current), convert_bytes(total)))
         time.sleep(interval)
